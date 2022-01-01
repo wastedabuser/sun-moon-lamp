@@ -18,14 +18,14 @@ const String lightsNames [] = {
   "SUN_COLD",
   "SUN_WARM"
 };
-const int lightMaxLevel = 8;
-const int lightPwmStep = 32;
+const int lightMaxLevel = 64;
+const int lightPwmStep = 256 / lightMaxLevel;
 const long tickInterval = 20;
 const long blinkInterval = 200;
 const int maxMoveTime = 950 * 3;
 const char* ssid     = "Sun Moon Lamp";
 const char* password = "123456789";
-String newHostname = "Sun Moon Lamp";
+const String wifiHostname = "Sun Moon Lamp";
 
 int lightLevels [] = {
   0, 0, 0, 0, 0, 0
@@ -33,8 +33,11 @@ int lightLevels [] = {
 boolean blinker = false;
 boolean blinkState = true;
 
-int motorHaltAngle = 86;
-int motorSpeedAngle = 20;
+int moonTone;
+int sunGlowColdness;
+
+int motorHaltAngle;
+int motorSpeedAngle;
 unsigned long lastMoveCommandTime;
 int lastMoveDirection;
 int moveDuration;
@@ -74,14 +77,26 @@ const char index_html[] PROGMEM = R"rawliteral(
     <button onclick="return setPreset('gibous')">Waning Gibous</button>
     <button onclick="return setPreset('quarter')">Third Quater</button>
     <button onclick="return setPreset('crescent')">Waning Crescent</button>
+    
+    <h3>Moon Tone</h3>
+    <select id="moon-tone" onchange="return calibratePreset('moon-tone', this.value)">
+      <option value="0">silver</option>
+      <option value="1">gold</option>
+    </select>
+    
+    <h3>Sun Glow Coldness<h3>
+    <input type="number" value="%SUN_GLOW_COLDNESS%" onchange="return calibratePreset('sun-glow-coldness', this.value)" />
   </p>
   <p>
     <h2>Motor</h2>
     <button onclick="return moveMotor('back')">&lt;</button>
     <button onclick="return moveMotor('stop')">Stop</button>
     <button onclick="return moveMotor('forward')">&gt;</button>
-    <h3>Callibrate</h3>
+    
+    <h3>Halt angle</h3>
     <input type="number" value="%HALT_ANGLE%" onchange="return calibrateMotor('halt', this.value)" />
+    
+    <h3>Speed angle</h3>
     <input type="number" value="%SPEED_ANGLE%" onchange="return calibrateMotor('speed', this.value)" />
   </p>
   <p>
@@ -99,6 +114,8 @@ const char index_html[] PROGMEM = R"rawliteral(
   </p>
 </body>
 <script>
+
+document.getElementById('moon-tone').value = "%MOON_TONE%";
 
 function revealPass() {
   var input = document.getElementById("pass");
@@ -123,6 +140,13 @@ function connect(){
 function setPreset(preset) {
   var xhttp = new XMLHttpRequest();
   xhttp.open("GET", "/preset?name=" + preset, true);
+  xhttp.send();
+  return false;
+}
+
+function calibratePreset(name, value) {
+  var xhttp = new XMLHttpRequest();
+  xhttp.open("GET", "/preset/calibrate?name=" + name + "&value=" + value, true);
   xhttp.send();
   return false;
 }
@@ -159,21 +183,22 @@ function toggleStatusBlinkLed() {
 </html>)rawliteral";
 
 String processor(const String& var) {
-  if (var == "HALT_ANGLE") {
-    return String(motorHaltAngle);
-  } else if (var == "SPEED_ANGLE") {
-    return String(motorSpeedAngle);
-  } else if (var == "USER") {
-    return wifiUser;
-  } else if (var == "PASS") {
-    return wifiPass;
-  }
+  if (var == "HALT_ANGLE") return String(motorHaltAngle);
+  else if (var == "SPEED_ANGLE") return String(motorSpeedAngle);
+  else if (var == "MOON_TONE") return String(moonTone);
+  else if (var == "SUN_GLOW_COLDNESS") return String(sunGlowColdness);
+  else if (var == "USER") return wifiUser;
+  else if (var == "PASS") return wifiPass;
+
   for (int i = 0; i < 6; i++) {
     if (var == lightsNames[i]) {
       String ret = "<h3>Channel " + String(i + 1) + "</h3>";
-      for (int j = 0; j < lightMaxLevel + 1; j++) {
+      for (int j = 0; j < lightMaxLevel; ) {
         ret = ret + "<button onclick=\"return toggleChannel(" + String(i) + "," + String(j) + ")\">" + String(j) + "</button>";
+        if (j > 4) j += lightMaxLevel / 8;
+        else j++;
       }
+      ret = ret + "<button onclick=\"return toggleChannel(" + String(i) + "," + String(lightMaxLevel) + ")\">" + String(lightMaxLevel) + "</button>";
       return ret;
     }
   }
@@ -194,8 +219,8 @@ void setup() {
 
   EEPROM.begin(512);
 
-  wifiUser = readForStore(0, 20);
-  wifiPass = readForStore(20, 20);
+  wifiUser = readStringFromStore(0, 20);
+  wifiPass = readStringFromStore(20, 20);
 
   if (rstReason == 6 && wifiUser.length() > 0) {
     clearMemory(0, 40);
@@ -205,7 +230,8 @@ void setup() {
 
   if (wifiUser.length() > 0) {
     Serial.println("Connecting to " + wifiUser + "…");
-    WiFi.hostname(newHostname.c_str());
+    WiFi.mode(WIFI_STA);
+    WiFi.hostname(wifiHostname);
     WiFi.begin(wifiUser, wifiPass);
     int attempts = 300000 / blinkInterval;
     while (WiFi.status() != WL_CONNECTED) {
@@ -234,6 +260,13 @@ void setup() {
     blinker = true;
   }
 
+  motorHaltAngle = readIntFromStore(40);
+  if (motorHaltAngle == 0 || motorHaltAngle == 255) motorHaltAngle = 86;
+  motorSpeedAngle = readIntFromStore(41);
+  if (motorSpeedAngle == 0 || motorSpeedAngle == 255) motorSpeedAngle = 20;
+  moonTone = readIntFromStore(42);
+  sunGlowColdness = readIntFromStore(43);
+
   server.on("/", HTTP_GET, [](AsyncWebServerRequest * request) {
     request->send_P(200, "text/html", index_html, processor);
   });
@@ -241,6 +274,12 @@ void setup() {
     String user = request->arg("user");
     String pass = request->arg("pass");
     saveWifiCreds(user, pass);
+    request->send_P(200, "text/plain", "OK");
+  });
+  server.on("/preset/calibrate", HTTP_GET, [](AsyncWebServerRequest * request) {
+    AsyncWebParameter* name = request->getParam("name");
+    AsyncWebParameter* value = request->getParam("value");
+    calibratePreset(name->value(), value->value());
     request->send_P(200, "text/plain", "OK");
   });
   server.on("/preset", HTTP_GET, [](AsyncWebServerRequest * request) {
@@ -292,8 +331,8 @@ void initLights() {
 
 void saveWifiCreds(String user, String pass) {
   Serial.println("Setting wifi ssid: " + user);
-  pendForStore(0, user);
-  pendForStore(20, pass);
+  pendStringToStore(0, user);
+  pendStringToStore(20, pass);
   EEPROM.commit();
   Serial.println("Saved wifi creds");
 
@@ -309,13 +348,18 @@ void clearMemory(int pos, int size) {
   Serial.println("Memory cleared!");
 }
 
-void pendForStore(int pos, String str) {
+void pendStringToStore(int pos, String str) {
   for (int j = 0; j < str.length(); j++) {
     EEPROM.write(pos + j, str[j]);
   }
 }
 
-String readForStore(int pos, int size) {
+void pendIntToStore(int pos, int num) {
+  EEPROM.write(pos, num);
+  EEPROM.commit();
+}
+
+String readStringFromStore(int pos, int size) {
   String val = "";
   for (int l = pos; l < pos + size; ++l) {
     int b = EEPROM.read(l);
@@ -326,16 +370,35 @@ String readForStore(int pos, int size) {
   return val;
 }
 
+int readIntFromStore(int pos) {
+  return EEPROM.read(pos);
+}
+
 void setMotorHalt(String value) {
   motorHaltAngle = value.toInt();
   Serial.println("Motor halt set to: " + value);
+  pendIntToStore(40, motorHaltAngle);
   stopServo();
 }
 
 void setMotorSpeed(String value) {
   motorSpeedAngle = value.toInt();
   Serial.println("Motor speed set to: " + value);
+  pendIntToStore(41, motorSpeedAngle);
   stopServo();
+}
+
+void calibratePreset(String name, String value) {
+  int index;
+  int val = value.toInt();
+  if (name == "moon-tone") {
+    index = 42;
+    moonTone = val;
+  } else if (name == "sun-glow-coldness") {
+    index = 43;
+    sunGlowColdness = val;
+  }
+  pendIntToStore(index, val);
 }
 
 boolean servoEnabled = false;
@@ -486,8 +549,8 @@ void setAllLightsToLevel(int level) {
 
 void setLightChannelLevel(int index, int level) {
   if (index < 0 || index > 5) return;
-
-  lightLevels[index] = lightPwmStep * level;
+  int val = lightPwmStep * level;
+  lightLevels[index] = val;
   Serial.println("Light channel " + String(index) + " set to level " + String(level));
 }
 
@@ -518,22 +581,26 @@ void applyPreset(String name) {
 
   boolean res;
   if (name == "sun") {
-    setAllLightsToLevel(lightMaxLevel);
+    setLightChannelsLevel(lightMaxLevel, lightMaxLevel, lightMaxLevel, lightMaxLevel, lightMaxLevel, sunGlowColdness);
     res = moveForward();
   } else if (name == "sunset") {
     setLightChannelsLevel(lightMaxLevel, 0, lightMaxLevel, 0, lightMaxLevel, 0);
     res = moveForward();
   } else if (name == "fullmoon") {
-    setLightChannelsLevel(0, 1, 0, 1, 0, 1);
+    if (moonTone == 1) setLightChannelsLevel(2, 0, 2, 0, 2, 0);
+    else setLightChannelsLevel(0, 2, 0, 2, 0, 2);
     res = moveForward();
   } else if (name == "gibous") {
-    setLightChannelsLevel(0, 2, 0, 0, 0, 0);
-    res = moveBackwardsFor(1560);
+    if (moonTone == 1) setLightChannelsLevel(2, 0, 0, 0, 0, 0);
+    else setLightChannelsLevel(0, 2, 0, 0, 0, 0);
+    res = moveBackwardsFor(1500);
   } else if ( name == "quarter") {
-    setLightChannelsLevel(0, 2, 0, 0, 0, 0);
-    res = moveBackwardsFor(780);
+    if (moonTone == 1) setLightChannelsLevel(2, 0, 0, 0, 0, 0);
+    else setLightChannelsLevel(0, 2, 0, 0, 0, 0);
+    res = moveBackwardsFor(700);
   } else if (name == "crescent") {
-    setLightChannelsLevel(0, 1, 0, 0, 0, 0);
+    if (moonTone == 1) setLightChannelsLevel(1, 0, 0, 0, 0, 0);
+    else setLightChannelsLevel(0, 1, 0, 0, 0, 0);
     res = moveBackwards();
   } else {
     res = moveBackwards();
@@ -556,6 +623,7 @@ void doTimedMove() {
 void endTimedMove() {
   stopServo();
   moveDuration = 0;
+  lastMoveDirection = 0;
   commitLightLevels();
 }
 
