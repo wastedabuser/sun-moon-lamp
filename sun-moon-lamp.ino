@@ -60,9 +60,9 @@ const char index_html[] PROGMEM = R"rawliteral(
   </style>
 </head>
 <body>
-  <h1>Sun/Moon Lamp</h1>
+  <h1>Sun Moon Lamp</h1>
   <p>
-    <h3>WiFi</h3>
+    <h2>WiFi</h2>
     <input type="text" id="user" value="%USER%" /><br/>
     <input type="password" id="pass" value="%PASS%" /> <button onclick="return revealPass()">Reveal</button><br/>
     <button onclick="return connect()">Connect</button>
