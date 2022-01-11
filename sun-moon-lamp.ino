@@ -7,6 +7,7 @@
 #include <EEPROM.h>
 
 #define SERVO D8
+#define BUTTON D10
 const int lightPins [] = {
   D7, D6, D5, D2, D1, D0
 };
@@ -35,6 +36,7 @@ boolean blinkState = true;
 
 int moonTone;
 int sunGlowColdness;
+int moonLevel;
 
 int motorHaltAngle;
 int motorSpeedAngle;
@@ -83,6 +85,9 @@ const char index_html[] PROGMEM = R"rawliteral(
       <option value="0">silver</option>
       <option value="1">gold</option>
     </select>
+
+    <h3>Moon Level<h3>
+    <input type="number" value="%MOON_LEVEL%" onchange="return calibratePreset('moon-level', this.value)" />
     
     <h3>Sun Glow Coldness<h3>
     <input type="number" value="%SUN_GLOW_COLDNESS%" onchange="return calibratePreset('sun-glow-coldness', this.value)" />
@@ -186,6 +191,7 @@ String processor(const String& var) {
   if (var == "HALT_ANGLE") return String(motorHaltAngle);
   else if (var == "SPEED_ANGLE") return String(motorSpeedAngle);
   else if (var == "MOON_TONE") return String(moonTone);
+  else if (var == "MOON_LEVEL") return String(moonLevel);
   else if (var == "SUN_GLOW_COLDNESS") return String(sunGlowColdness);
   else if (var == "USER") return wifiUser;
   else if (var == "PASS") return wifiPass;
@@ -220,9 +226,10 @@ void setup() {
   EEPROM.begin(512);
 
   wifiUser = readStringFromStore(0, 20);
-  wifiPass = readStringFromStore(20, 20);
+  wifiPass = readStringFromStore(20, 19);
+  int resetFlag = readIntFromStore(39);
 
-  if (rstReason == 6 && wifiUser.length() > 0) {
+  if (resetFlag == 1 && wifiUser.length() > 0) {
     clearMemory(0, 40);
     wifiUser = "";
     wifiPass = "";
@@ -266,6 +273,7 @@ void setup() {
   if (motorSpeedAngle == 0 || motorSpeedAngle == 255) motorSpeedAngle = 20;
   moonTone = readIntFromStore(42);
   sunGlowColdness = readIntFromStore(43);
+  moonLevel = readIntFromStore(44);
 
   server.on("/", HTTP_GET, [](AsyncWebServerRequest * request) {
     request->send_P(200, "text/html", index_html, processor);
@@ -319,6 +327,8 @@ void setup() {
   });
 
   server.begin();
+
+  pinMode(BUTTON, INPUT);
 }
 
 void initLights() {
@@ -374,6 +384,14 @@ int readIntFromStore(int pos) {
   return EEPROM.read(pos);
 }
 
+void clearAndReset() {
+  pendIntToStore(39, 1);
+  Serial.println("Saved reset flag");
+
+  Serial.println("Restarting ...");
+  ESP.restart();
+}
+
 void setMotorHalt(String value) {
   motorHaltAngle = value.toInt();
   Serial.println("Motor halt set to: " + value);
@@ -397,6 +415,9 @@ void calibratePreset(String name, String value) {
   } else if (name == "sun-glow-coldness") {
     index = 43;
     sunGlowColdness = val;
+  } else if (name == "moon-level") {
+    index = 44;
+    moonLevel = val;
   }
   pendIntToStore(index, val);
 }
@@ -587,20 +608,20 @@ void applyPreset(String name) {
     setLightChannelsLevel(lightMaxLevel, 0, lightMaxLevel, 0, lightMaxLevel, 0);
     res = moveForward();
   } else if (name == "fullmoon") {
-    if (moonTone == 1) setLightChannelsLevel(2, 0, 2, 0, 2, 0);
-    else setLightChannelsLevel(0, 2, 0, 2, 0, 2);
+    if (moonTone == 1) setLightChannelsLevel(moonLevel, 0, moonLevel, 0, moonLevel, 0);
+    else setLightChannelsLevel(0, moonLevel, 0, moonLevel, 0, moonLevel);
     res = moveForward();
   } else if (name == "gibous") {
-    if (moonTone == 1) setLightChannelsLevel(2, 0, 0, 0, 0, 0);
-    else setLightChannelsLevel(0, 2, 0, 0, 0, 0);
+    if (moonTone == 1) setLightChannelsLevel(moonLevel, 0, 0, 0, 0, 0);
+    else setLightChannelsLevel(0, moonLevel, 0, 0, 0, 0);
     res = moveBackwardsFor(1500);
   } else if ( name == "quarter") {
-    if (moonTone == 1) setLightChannelsLevel(2, 0, 0, 0, 0, 0);
-    else setLightChannelsLevel(0, 2, 0, 0, 0, 0);
+    if (moonTone == 1) setLightChannelsLevel(moonLevel, 0, 0, 0, 0, 0);
+    else setLightChannelsLevel(0, moonLevel, 0, 0, 0, 0);
     res = moveBackwardsFor(700);
   } else if (name == "crescent") {
-    if (moonTone == 1) setLightChannelsLevel(1, 0, 0, 0, 0, 0);
-    else setLightChannelsLevel(0, 1, 0, 0, 0, 0);
+    if (moonTone == 1) setLightChannelsLevel(moonLevel, 0, 0, 0, 0, 0);
+    else setLightChannelsLevel(0, moonLevel, 0, 0, 0, 0);
     res = moveBackwards();
   } else {
     res = moveBackwards();
@@ -679,6 +700,11 @@ void loop() {
       doTimedMove();
     } else if (timedMove && moveDuration > 0 && dt >= moveDuration) {
       endTimedMove();
+    }
+
+    int buttonState = digitalRead(BUTTON);
+    if (buttonState == HIGH) {
+      clearAndReset();
     }
 
     if (blinker) {
